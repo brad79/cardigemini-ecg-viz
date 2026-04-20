@@ -1020,16 +1020,18 @@ st.caption(
 # 平均波形用 50 mm/s（大格 100ms）×10 mm/mV（大格 0.5mV）→ scaleratio=200（1mV=200ms）
 # 正方形格線條件：subplot_h = col_w × (dtick_x/beat_ms) × (y_range/dtick_y)
 #              = col_w × (100/beat_ms) × (2×y_half/0.5)
-_beat_ms = float(t_avg[-1]) if len(t_avg) > 1 else 600.0
+_beat_ms   = float(t_avg[-1]) if len(t_avg) > 1 else 600.0
+_t_start   = float(t_avg[0])  if len(t_avg) > 1 else 0.0
 _y3_max_amp = float(max(abs(avg_ecg[_ch]).max() for _ch in range(min(12, avg_ecg.shape[0]))))
 _y3_half = max(1.0, _y3_max_amp * 1.25)   # ±半幅，至少 ±1 mV，留 25% 餘量
-_col3_px = 380   # 3-column Streamlit 版面約 380 px/欄
-_fig3_h = max(150, min(450, int(_col3_px * (100.0 / _beat_ms) * (2 * _y3_half / 0.5))))
+_col4_px = 280   # 4-column Streamlit 版面約 280 px/欄
+_fig3_h = max(150, min(450, int(_col4_px * (100.0 / _beat_ms) * (2 * _y3_half / 0.5))))
 
-for _ri in range(4):
-    _gcols = st.columns(3)
-    for _ci in range(3):
-        _ch = _ri * 3 + _ci
+# 4 columns × 3 rows: col 0=I/II/III, col 1=aVR/aVL/aVF, col 2=V1/V2/V3, col 3=V4/V5/V6
+for _ri in range(3):
+    _gcols = st.columns(4)
+    for _ci in range(4):
+        _ch = _ci * 3 + _ri      # column-major mapping
         if _ch >= 12:
             break
         with _gcols[_ci]:
@@ -1093,11 +1095,11 @@ for _ri in range(4):
                     font=dict(size=12), x=0.5, xanchor="center",
                 ),
                 height=_fig3_h,
-                margin=dict(t=28, b=2, l=8, r=8),
+                margin=dict(t=28, b=2, l=0, r=0),
                 paper_bgcolor="#FFFDE7",
                 plot_bgcolor="#FFFDE7",
                 xaxis=dict(
-                    range=[0, _beat_ms],
+                    range=[_t_start, _beat_ms],
                     zeroline=False, showticklabels=False,
                 ),
                 yaxis=dict(
@@ -1457,11 +1459,11 @@ else:
     col_3d, col_polar = st.columns(2)
 
     with col_3d:
-        st.caption("3D 完整心臟模型（真實心室網格，可拖曳旋轉）— 橘紅色＝缺血區域，白色＝正常心肌")
+        st.caption("3D 完整心臟模型（真實心室網格，可拖曳旋轉）— 橘紅色＝正常心肌，白色＝缺血區域")
         st.plotly_chart(_mesh3d_ischemia(label_pred), use_container_width=True)
 
     with col_polar:
-        st.caption("Bull's-Eye Polar Map — 對應 SRC 預測區域（共 131 種情境預渲染圖）")
+        st.caption("Bull's-Eye Polar Map — 對應 SRC 預測區域")
         _bullseye_path = os.path.join(_BULLSEYE_DIR, f"area_{label_pred}.png")
         if os.path.exists(_bullseye_path):
             st.image(_bullseye_path, use_container_width=True)
