@@ -1106,8 +1106,6 @@ for _ri in range(3):
                     range=[-_y3_half, _y3_half],
                     zeroline=True, zerolinecolor="#E91E63",
                     zerolinewidth=1.2, showticklabels=False,
-                    scaleanchor="x", scaleratio=200,  # 1 mV = 200 ms（50 mm/s, 10 mm/mV）
-                    constrain="domain",
                 ),
             )
             # 心電圖紙格線（50 mm/s：大格 100ms，小格 20ms）
