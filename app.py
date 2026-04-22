@@ -1503,7 +1503,7 @@ else:
                 f"**風險等級：** :{_risk_color}[**{_exp['risk']}**]"
             )
             st.markdown("---")
-            st.markdown(f"**心電圖發現：**\n\n{_exp['finding']}")
+            st.markdown(f"**請同時觀察心電圖是否出現**\n\n{_exp['finding']}")
             st.markdown("---")
             st.markdown(f"**建議處置：**\n\n{_exp['action']}")
 
