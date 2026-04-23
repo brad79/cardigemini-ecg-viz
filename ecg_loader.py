@@ -312,7 +312,7 @@ def _pick_mat_data(mat: Dict[str, Any]) -> Tuple[np.ndarray, Optional[float], Op
                 continue
 
     # label key 候選
-    label_keys = ["label", "labels", "ch_names", "chan_names", "channel_names", "sig_name", "lead_names"]
+    label_keys = ["lead_name", "label", "labels", "ch_names", "chan_names", "channel_names", "sig_name", "lead_names"]
     labels: Optional[List[str]] = None
     for k in label_keys:
         if k in mat:
@@ -330,7 +330,7 @@ def _pick_mat_data(mat: Dict[str, Any]) -> Tuple[np.ndarray, Optional[float], Op
                 continue
 
     # data key 候選（先試常見）
-    data_keys = ["data", "ecg", "ECG", "signal", "signals", "sig", "val", "x", "X"]
+    data_keys = ["ecg_signal", "data", "ecg", "ECG", "signal", "signals", "sig", "val", "x", "X"]
     for k in data_keys:
         if k in mat:
             v = mat[k]

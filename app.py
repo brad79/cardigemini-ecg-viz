@@ -8,6 +8,7 @@ app.py — Streamlit 主程式
 """
 import sys
 import os
+import math
 import tempfile
 import numpy as np
 import streamlit as st
@@ -48,6 +49,7 @@ MI_THRESHOLD = 0.25
 
 # ── 常數 ─────────────────────────────────────────────────────────────
 TRAINSET_PATH = os.path.join(_APP_DIR, "data", "src_trainset.npz")
+TRAINSET_PATH_24CH = os.path.join(_APP_DIR, "data", "src_trainset24ch.npz")
 LEAD_ORDER = DEFAULT_12LEAD
 FEATURE_NAMES = ["T_amp", "J_amp", "JT25_amp", "JT50_amp", "JT_slope"]
 
@@ -665,10 +667,21 @@ if fs_raw is None:
 
 _is_pdf_upload = uploaded_main.name.lower().endswith(".pdf")
 n_samples, n_ch = data_raw.shape
-st.success(f"載入成功  |  取樣率 {fs_raw} Hz  |  {n_samples} samples  |  {n_ch} 導程")
 
-# 顯示原始 12 導程波形（臨床標準 4×3 格式）
-with st.expander("12 導程心電圖波形預覽（前 2.5 秒）", expanded=True):
+# 偵測是否為 24 導 MECG（V1-V6 + CR/CA 通道，無肢導）
+_is_24ch_mecg = (n_ch >= 24 and
+    any("CR" in l.upper() or "CA" in l.upper() for l in labels_raw))
+_n_leads = 24 if _is_24ch_mecg else min(n_ch, 12)
+_lead_names = list(labels_raw[:_n_leads])
+
+_ecg_type_label = "24 導程（MECG）" if _is_24ch_mecg else "12 導程"
+st.success(f"載入成功  |  取樣率 {fs_raw} Hz  |  {n_samples} samples  |  {n_ch} 導程  |  類型：{_ecg_type_label}")
+if _is_24ch_mecg:
+    st.info("偵測到 24 導 MECG 格式（V1-V6 + CR1-CR10 + CA1-CA8）。"
+            "DL 篩檢僅使用 V1-V6（補零肢導），結果僅供參考；SRC 缺血定位將使用全部 24 導特徵。")
+
+# 顯示波形（依導程數自動切換格式）
+with st.expander(f"{_ecg_type_label} 心電圖波形預覽（前 2.5 秒）", expanded=True):
     # ── 振幅增益控制 ───────────────────────────────────────────────
     gain_col, info_col = st.columns([2, 3])
     with gain_col:
@@ -686,7 +699,10 @@ with st.expander("12 導程心電圖波形預覽（前 2.5 秒）", expanded=Tru
         )
         gain_factor = _GAIN_MAP[gain_label]
     with info_col:
-        st.caption("臨床標準格式：3 列 × 4 行  |  走紙速度 25 mm/s  |  標準增益 10 mm/mV")
+        if _is_24ch_mecg:
+            st.caption("24 導 MECG 格式：6 列 × 4 行  |  走紙速度 25 mm/s  |  標準增益 10 mm/mV")
+        else:
+            st.caption("臨床標準格式：3 列 × 4 行  |  走紙速度 25 mm/s  |  標準增益 10 mm/mV")
 
     # ── ECG 濾波器控制 ─────────────────────────────────────────────
     st.markdown("**ECG 濾波器**")
@@ -728,106 +744,126 @@ with st.expander("12 導程心電圖波形預覽（前 2.5 秒）", expanded=Tru
 
     n_show   = min(n_samples, int(fs_raw * 2.5))   # 顯示前 2.5 秒（臨床標準每欄 2.5s）
     t_axis   = np.arange(n_show) / fs_raw
+    _x_range_s = n_show / fs_raw
+    _y_major = 0.5 * gain_factor
+    _y_minor = 0.1 * gain_factor
 
-    # ── 臨床 4×3 導程位置表（4 行 × 3 列）─────────────────────────
-    # 格式：(row, col, 標準導程名稱)
-    _LAYOUT_4X3 = [
-        (1, 1, "I"),   (1, 2, "aVR"), (1, 3, "V1"), (1, 4, "V4"),
-        (2, 1, "II"),  (2, 2, "aVL"), (2, 3, "V2"), (2, 4, "V5"),
-        (3, 1, "III"), (3, 2, "aVF"), (3, 3, "V3"), (3, 4, "V6"),
-    ]
+    if _is_24ch_mecg:
+        # ── 24 導 MECG：6 列 × 4 行，依序顯示所有 24 通道 ──────────
+        _n_cols_raw = 4
+        _n_rows_raw = math.ceil(_n_leads / _n_cols_raw)
+        _raw_titles = [_lead_names[i] if i < _n_leads else "" for i in range(_n_rows_raw * _n_cols_raw)]
+        fig_raw = make_subplots(
+            rows=_n_rows_raw, cols=_n_cols_raw,
+            vertical_spacing=0.06,
+            horizontal_spacing=0.04,
+            subplot_titles=_raw_titles,
+        )
+        for _ch in range(_n_leads):
+            _ri24 = _ch // _n_cols_raw + 1
+            _ci24 = _ch % _n_cols_raw + 1
+            y_sig = (data_proc[:n_show, _ch] * gain_factor).tolist()
+            fig_raw.add_trace(
+                go.Scatter(x=t_axis, y=y_sig, mode="lines",
+                           line=dict(width=1.2, color="#1A237E"),
+                           showlegend=False, name=_lead_names[_ch]),
+                row=_ri24, col=_ci24,
+            )
+        _fig_raw_h = int(max(400, min(2000, _n_rows_raw * 200)))
+        fig_raw.update_layout(
+            height=_fig_raw_h,
+            margin=dict(t=40, b=30, l=30, r=20),
+            paper_bgcolor="white", plot_bgcolor="#FFFDE7",
+            font=dict(color="#1A1A2E"),
+        )
+        fig_raw.update_xaxes(
+            showgrid=True, gridcolor="#F48FB1", gridwidth=1.0, dtick=0.2,
+            minor=dict(showgrid=True, dtick=0.04, gridcolor="#FCE4EC", gridwidth=0.5),
+            zeroline=False, showticklabels=False, ticks="", range=[0, _x_range_s],
+        )
+        fig_raw.update_yaxes(
+            showgrid=True, gridcolor="#F48FB1", gridwidth=1.0, dtick=_y_major,
+            minor=dict(showgrid=True, dtick=_y_minor, gridcolor="#FCE4EC", gridwidth=0.5),
+            zeroline=True, zerolinecolor="#E91E63", zerolinewidth=1.2,
+            showticklabels=False, ticks="",
+            range=[-2.0 * gain_factor, 2.0 * gain_factor],
+        )
+        for _c in range(1, _n_cols_raw + 1):
+            fig_raw.update_xaxes(showticklabels=True, title_text="s",
+                                  row=_n_rows_raw, col=_c)
 
-    # 大小寫不敏感的導程名稱查找表
-    _label_upper_map = {l.strip().upper(): i for i, l in enumerate(labels_raw)}
-    _avx_alias = {"AVR": "aVR", "AVL": "aVL", "AVF": "aVF"}
+    else:
+        # ── 標準 12 導：臨床 4×3 導程位置表 ────────────────────────
+        _LAYOUT_4X3 = [
+            (1, 1, "I"),   (1, 2, "aVR"), (1, 3, "V1"), (1, 4, "V4"),
+            (2, 1, "II"),  (2, 2, "aVL"), (2, 3, "V2"), (2, 4, "V5"),
+            (3, 1, "III"), (3, 2, "aVF"), (3, 3, "V3"), (3, 4, "V6"),
+        ]
 
-    def _find_ch(lead_name: str) -> int | None:
-        key = lead_name.strip().upper()
-        idx = _label_upper_map.get(key)
-        if idx is None:
-            # 嘗試別名（AVR↔aVR 等）
-            for alias, canon in _avx_alias.items():
-                if key == alias or key == canon.upper():
-                    idx = _label_upper_map.get(alias) or _label_upper_map.get(canon.upper())
-                    break
-        return idx if (idx is not None and idx < n_ch) else None
+        _label_upper_map = {l.strip().upper(): i for i, l in enumerate(labels_raw)}
+        _avx_alias = {"AVR": "aVR", "AVL": "aVL", "AVF": "aVF"}
 
-    fig_raw = make_subplots(
-        rows=3, cols=4,
-        # shared_xaxes 與 scaleanchor 衝突，改為手動統一 x 範圍
-        vertical_spacing=0.10,
-        horizontal_spacing=0.05,
-        subplot_titles=[ln for _, _, ln in _LAYOUT_4X3],
-    )
+        def _find_ch(lead_name: str) -> int | None:
+            key = lead_name.strip().upper()
+            idx = _label_upper_map.get(key)
+            if idx is None:
+                for alias, canon in _avx_alias.items():
+                    if key == alias or key == canon.upper():
+                        idx = _label_upper_map.get(alias) or _label_upper_map.get(canon.upper())
+                        break
+            return idx if (idx is not None and idx < n_ch) else None
 
-    for row, col, lead_name in _LAYOUT_4X3:
-        ch_idx = _find_ch(lead_name)
-        if ch_idx is not None:
-            y_sig = (data_proc[:n_show, ch_idx] * gain_factor).tolist()
-        else:
-            y_sig = [0.0] * n_show   # 導程不存在則顯示平線
-
-        fig_raw.add_trace(
-            go.Scatter(
-                x=t_axis, y=y_sig,
-                mode="lines",
-                line=dict(width=1.2, color="#1A237E"),   # 深靛藍
-                showlegend=False,
-                name=lead_name,
-            ),
-            row=row, col=col,
+        fig_raw = make_subplots(
+            rows=3, cols=4,
+            vertical_spacing=0.10,
+            horizontal_spacing=0.05,
+            subplot_titles=[ln for _, _, ln in _LAYOUT_4X3],
         )
 
-    # ECG 心電圖紙風格：標準雙層格線（大格 0.2s/0.5mV、小格 0.04s/0.1mV）
-    _y_major = 0.5 * gain_factor   # 大格 0.5 mV（依增益縮放）
-    _y_minor = 0.1 * gain_factor   # 小格 0.1 mV
+        for row, col, lead_name in _LAYOUT_4X3:
+            ch_idx = _find_ch(lead_name)
+            if ch_idx is not None:
+                y_sig = (data_proc[:n_show, ch_idx] * gain_factor).tolist()
+            else:
+                y_sig = [0.0] * n_show
+            fig_raw.add_trace(
+                go.Scatter(x=t_axis, y=y_sig, mode="lines",
+                           line=dict(width=1.2, color="#1A237E"),
+                           showlegend=False, name=lead_name),
+                row=row, col=col,
+            )
 
-    # 計算正方形格線所需圖高
-    # ECG 標準：25 mm/s、10 mm/mV → 1 mV = 0.4 s → scaleratio = 0.4
-    # subplot_h = subplot_w × (y_range) / (x_range × 2.5)
-    _x_range_s = n_show / fs_raw
-    _subplot_w_px = (1150 - 50) * (1 - 3 * 0.05) / 4   # ≈ 234 px（假設 1150px 容器）
-    _subplot_h_px = _subplot_w_px * (4.0 * gain_factor) / (_x_range_s * 2.5)
-    # row_fraction ≈ (1 - 2×v_spacing)/3 = 0.267，圖高 = subplot_h/0.267 + margins
-    _fig12_h = int(max(300, min(1200, _subplot_h_px / 0.267 + 70)))
+        _subplot_w_px = (1150 - 50) * (1 - 3 * 0.05) / 4
+        _subplot_h_px = _subplot_w_px * (4.0 * gain_factor) / (_x_range_s * 2.5)
+        _fig_raw_h = int(max(300, min(1200, _subplot_h_px / 0.267 + 70)))
 
-    fig_raw.update_layout(
-        height=_fig12_h,
-        margin=dict(t=40, b=30, l=30, r=20),
-        paper_bgcolor="white",
-        plot_bgcolor="#FFFDE7",      # 淡黃（心電圖紙）
-        font=dict(color="#1A1A2E"),
-    )
-    fig_raw.update_xaxes(
-        showgrid=True,
-        gridcolor="#F48FB1",  # 大格深粉紅（0.2 s）
-        gridwidth=1.0,
-        dtick=0.2,
-        minor=dict(showgrid=True, dtick=0.04, gridcolor="#FCE4EC", gridwidth=0.5),
-        zeroline=False, showticklabels=False, ticks="",
-    )
-    fig_raw.update_yaxes(
-        showgrid=True,
-        gridcolor="#F48FB1",  # 大格深粉紅（0.5 mV）
-        gridwidth=1.0,
-        dtick=_y_major,
-        minor=dict(showgrid=True, dtick=_y_minor, gridcolor="#FCE4EC", gridwidth=0.5),
-        zeroline=True, zerolinecolor="#E91E63", zerolinewidth=1.2,
-        showticklabels=False, ticks="",
-        range=[-2.0 * gain_factor, 2.0 * gain_factor],  # 統一刻度 ±2 mV（依增益縮放）
-    )
-    # 統一所有子圖的 x 軸範圍（取代 shared_xaxes）
-    fig_raw.update_xaxes(range=[0, _x_range_s])
-    # 最下排顯示時間軸標籤
-    for c in range(1, 5):
-        fig_raw.update_xaxes(showticklabels=True, title_text="s", row=3, col=c)
+        fig_raw.update_layout(
+            height=_fig_raw_h,
+            margin=dict(t=40, b=30, l=30, r=20),
+            paper_bgcolor="white", plot_bgcolor="#FFFDE7",
+            font=dict(color="#1A1A2E"),
+        )
+        fig_raw.update_xaxes(
+            showgrid=True, gridcolor="#F48FB1", gridwidth=1.0, dtick=0.2,
+            minor=dict(showgrid=True, dtick=0.04, gridcolor="#FCE4EC", gridwidth=0.5),
+            zeroline=False, showticklabels=False, ticks="",
+        )
+        fig_raw.update_yaxes(
+            showgrid=True, gridcolor="#F48FB1", gridwidth=1.0, dtick=_y_major,
+            minor=dict(showgrid=True, dtick=_y_minor, gridcolor="#FCE4EC", gridwidth=0.5),
+            zeroline=True, zerolinecolor="#E91E63", zerolinewidth=1.2,
+            showticklabels=False, ticks="",
+            range=[-2.0 * gain_factor, 2.0 * gain_factor],
+        )
+        fig_raw.update_xaxes(range=[0, _x_range_s])
+        for c in range(1, 5):
+            fig_raw.update_xaxes(showticklabels=True, title_text="s", row=3, col=c)
 
-    # 每個子圖設定 scaleanchor，確保 ECG 格線為正方形（scaleratio=0.4：1 mV = 0.4 s）
-    for _i in range(12):
-        _sfx = "" if _i == 0 else str(_i + 1)
-        fig_raw.update_layout(**{
-            f"yaxis{_sfx}": {"scaleanchor": f"x{_sfx}", "scaleratio": 0.4, "constrain": "domain"}
-        })
+        for _i in range(12):
+            _sfx = "" if _i == 0 else str(_i + 1)
+            fig_raw.update_layout(**{
+                f"yaxis{_sfx}": {"scaleanchor": f"x{_sfx}", "scaleratio": 0.4, "constrain": "domain"}
+            })
 
     st.plotly_chart(fig_raw, use_container_width=True)
 
@@ -943,7 +979,7 @@ _jt_init_key = f"_jt_init_{uploaded_main.name}"
 if not st.session_state.get(_jt_init_key):
     n_avg_init = avg_ecg.shape[1]
     _init_j, _init_t = [], []
-    for _ch in range(12):
+    for _ch in range(_n_leads):
         _j_a = int(Jpos[_ch]) if not np.isnan(Jpos[_ch]) and Jpos[_ch] >= 0 else max(0, n_avg_init // 4)
         _t_a = int(Tpeak[_ch]) if not np.isnan(Tpeak[_ch]) and Tpeak[_ch] >= 0 else min(n_avg_init - 1, n_avg_init * 3 // 4)
         st.session_state[f"jslider_{_ch}"] = _j_a
@@ -959,32 +995,32 @@ if not st.session_state.get(_jt_init_key):
 n_avg = avg_ecg.shape[1]
 t_avg = np.arange(n_avg) / fs_avg * 1000  # ms
 
-_j_auto_list = [int(Jpos[ch]) if not np.isnan(Jpos[ch]) and Jpos[ch] >= 0 else -1 for ch in range(12)]
-_t_auto_list = [int(Tpeak[ch]) if not np.isnan(Tpeak[ch]) and Tpeak[ch] >= 0 else -1 for ch in range(12)]
+_j_auto_list = [int(Jpos[ch]) if not np.isnan(Jpos[ch]) and Jpos[ch] >= 0 else -1 for ch in range(_n_leads)]
+_t_auto_list = [int(Tpeak[ch]) if not np.isnan(Tpeak[ch]) and Tpeak[ch] >= 0 else -1 for ch in range(_n_leads)]
 
 # ── 重設為自動偵測（pending flag 模式，必須在 slider 建立前執行）────────
 if st.session_state.pop("_jt_reset_pending", False):
-    for _c in range(12):
+    for _c in range(_n_leads):
         _ja = _j_auto_list[_c] if _j_auto_list[_c] >= 0 else max(0, n_avg // 4)
         _ta = _t_auto_list[_c] if _t_auto_list[_c] >= 0 else min(n_avg - 1, n_avg * 3 // 4)
         st.session_state[f"jslider_{_c}"] = _ja
         st.session_state[f"tslider_{_c}"] = _ta
-    st.session_state["jpos_committed"]  = [st.session_state[f"jslider_{c}"] for c in range(12)]
-    st.session_state["tpeak_committed"] = [st.session_state[f"tslider_{c}"] for c in range(12)]
+    st.session_state["jpos_committed"]  = [st.session_state[f"jslider_{c}"] for c in range(_n_leads)]
+    st.session_state["tpeak_committed"] = [st.session_state[f"tslider_{c}"] for c in range(_n_leads)]
     st.rerun()
 
 # ── 驗證 slider session_state 完整性（防止 init key 存在但值遺失）────────
 _needs_reinit = any(
     f"jslider_{_ch}" not in st.session_state or f"tslider_{_ch}" not in st.session_state
-    for _ch in range(12)
+    for _ch in range(_n_leads)
 )
 if _needs_reinit:
     st.session_state.pop(_jt_init_key, None)
     st.rerun()
 
 # 滑桿目前值（即時預覽用）
-Jpos_use  = np.array([st.session_state.get(f"jslider_{ch}", max(0, _j_auto_list[ch])) for ch in range(12)])
-Tpeak_use = np.array([st.session_state.get(f"tslider_{ch}", max(0, _t_auto_list[ch])) for ch in range(12)])
+Jpos_use  = np.array([st.session_state.get(f"jslider_{ch}", max(0, _j_auto_list[ch])) for ch in range(_n_leads)])
+Tpeak_use = np.array([st.session_state.get(f"tslider_{ch}", max(0, _t_auto_list[ch])) for ch in range(_n_leads)])
 
 # 已確認提交值（SRC 使用）
 Jpos_committed  = np.array(st.session_state.get("jpos_committed",  Jpos_use.tolist()), dtype=int)
@@ -993,7 +1029,7 @@ Tpeak_committed = np.array(st.session_state.get("tpeak_committed", Tpeak_use.tol
 # 特徵提取（使用已確認的特徵點）
 with st.spinner("提取 JT 特徵…"):
     try:
-        feature = extract_jt_features(avg_ecg[:12], Jpos_committed, Tpeak_committed, DC[:12])
+        feature = extract_jt_features(avg_ecg[:_n_leads], Jpos_committed, Tpeak_committed, DC[:_n_leads])
     except Exception as e:
         st.error(f"特徵提取失敗：{e}")
         st.stop()
@@ -1001,15 +1037,15 @@ with st.spinner("提取 JT 特徵…"):
 # ── 是否有未確認的修改 ─────────────────────────────────────────────
 _is_jt_modified = any(
     int(Jpos_use[ch]) != _j_auto_list[ch] or int(Tpeak_use[ch]) != _t_auto_list[ch]
-    for ch in range(12)
+    for ch in range(_n_leads)
 )
 _is_jt_pending = (
     list(Jpos_use.astype(int).tolist()) != list(Jpos_committed.tolist())
     or list(Tpeak_use.astype(int).tolist()) != list(Tpeak_committed.tolist())
 )
 
-# ── 12 導程波形 + 手動調整滑桿（4×3，每格：波形圖 + J/T 滑桿）──────
-st.markdown("#### 12 導程平均波形　— 紅點 J-point ｜ 藍三角 T-peak")
+# ── 多導程波形 + 手動調整滑桿（4列，每格：波形圖 + J/T 滑桿）──────
+st.markdown(f"#### {_n_leads} 導程平均波形　— 紅點 J-point ｜ 藍三角 T-peak")
 st.caption(
     "拖曳各導程下方滑桿可即時調整特徵點位置（波形圖即時更新）。"
     "調整完畢後點擊下方「確認修改」按鈕以重新執行 SRC 分析。"
@@ -1022,17 +1058,22 @@ st.caption(
 #              = col_w × (100/beat_ms) × (2×y_half/0.5)
 _beat_ms   = float(t_avg[-1]) if len(t_avg) > 1 else 600.0
 _t_start   = float(t_avg[0])  if len(t_avg) > 1 else 0.0
-_y3_max_amp = float(max(abs(avg_ecg[_ch]).max() for _ch in range(min(12, avg_ecg.shape[0]))))
+_y3_max_amp = float(max(abs(avg_ecg[_ch]).max() for _ch in range(min(_n_leads, avg_ecg.shape[0]))))
 _y3_half = max(1.0, _y3_max_amp * 1.25)   # ±半幅，至少 ±1 mV，留 25% 餘量
 _col4_px = 280   # 4-column Streamlit 版面約 280 px/欄
 _fig3_h = max(150, min(450, int(_col4_px * (100.0 / _beat_ms) * (2 * _y3_half / 0.5))))
 
-# 4 columns × 3 rows: col 0=I/II/III, col 1=aVR/aVL/aVF, col 2=V1/V2/V3, col 3=V4/V5/V6
-for _ri in range(3):
-    _gcols = st.columns(4)
-    for _ci in range(4):
-        _ch = _ci * 3 + _ri      # column-major mapping
-        if _ch >= 12:
+# 4 columns × n rows（12 導用 column-major，24 導用 row-major）
+_n_cols3 = 4
+_n_rows3 = math.ceil(_n_leads / _n_cols3)
+for _ri in range(_n_rows3):
+    _gcols = st.columns(_n_cols3)
+    for _ci in range(_n_cols3):
+        if _is_24ch_mecg:
+            _ch = _ri * _n_cols3 + _ci   # row-major（24 導）
+        else:
+            _ch = _ci * 3 + _ri          # column-major（12 導，維持原有臨床順序）
+        if _ch >= _n_leads:
             break
         with _gcols[_ci]:
             _j_cur = int(Jpos_use[_ch])
@@ -1091,7 +1132,7 @@ for _ri in range(3):
 
             _fig.update_layout(
                 title=dict(
-                    text=f"<b>{LEAD_ORDER[_ch]}</b>{_badge}",
+                    text=f"<b>{_lead_names[_ch]}</b>{_badge}",
                     font=dict(size=12), x=0.5, xanchor="center",
                 ),
                 height=_fig3_h,
@@ -1153,8 +1194,8 @@ with _cb1:
         disabled=not _is_jt_pending,
         use_container_width=True,
     ):
-        st.session_state["jpos_committed"]  = [int(st.session_state.get(f"jslider_{c}", _j_auto_list[c])) for c in range(12)]
-        st.session_state["tpeak_committed"] = [int(st.session_state.get(f"tslider_{c}", _t_auto_list[c])) for c in range(12)]
+        st.session_state["jpos_committed"]  = [int(st.session_state.get(f"jslider_{c}", _j_auto_list[c])) for c in range(_n_leads)]
+        st.session_state["tpeak_committed"] = [int(st.session_state.get(f"tslider_{c}", _t_auto_list[c])) for c in range(_n_leads)]
         st.rerun()
 with _cb2:
     if st.button("↺ 重設為自動偵測值", type="secondary", use_container_width=True):
@@ -1169,20 +1210,21 @@ with _cb3:
         st.success("使用自動偵測特徵點進行 SRC 分析。")
 
 # ── 特徵矩陣 heatmap ──────────────────────────────────────────
-with st.expander("JT 特徵矩陣（12 Lead × 5 特徵）", expanded=False):
-    feat_arr = np.array(feature[:12])
+with st.expander(f"JT 特徵矩陣（{_n_leads} Lead × 5 特徵）", expanded=False):
+    feat_arr = np.array(feature[:_n_leads])
     fig_hm = go.Figure(go.Heatmap(
         z=feat_arr.tolist(),
         x=FEATURE_NAMES,
-        y=LEAD_ORDER[:12],
+        y=_lead_names,
         colorscale="RdBu_r",
         zmid=0,
         text=[[f"{v:.3f}" for v in row] for row in feat_arr.tolist()],
         texttemplate="%{text}",
     ))
+    _hm_h = max(420, _n_leads * 18 + 80)
     fig_hm.update_layout(
-        title="JT 特徵矩陣（正規化後，使用已確認特徵點）",
-        height=420, margin=dict(t=40, b=20),
+        title=f"JT 特徵矩陣（正規化後，使用已確認特徵點）",
+        height=_hm_h, margin=dict(t=40, b=20),
     )
     st.plotly_chart(fig_hm, use_container_width=True)
 
@@ -1212,7 +1254,12 @@ def _cached_mi_predict(data_bytes: bytes, fs: float, is_pdf: bool = False) -> fl
     return prob
 
 
-_signal_12xN = data_raw[:, :12].T.astype(np.float64)  # (12, n_samples)
+if _is_24ch_mecg:
+    # 24 導 MECG 缺少肢導：將 V1-V6（index 0-5）填入 precordial 位置（6-11），肢導補零
+    _signal_12xN = np.zeros((12, data_raw.shape[0]), dtype=np.float64)
+    _signal_12xN[6:12, :] = data_raw[:, 0:6].T.astype(np.float64)
+else:
+    _signal_12xN = data_raw[:, :12].T.astype(np.float64)  # (12, n_samples)
 _mi_prob = _cached_mi_predict(_signal_12xN.tobytes(), float(fs_raw), _is_pdf_upload)
 
 _mi_threshold_pct = st.slider(
@@ -1287,8 +1334,9 @@ def _cached_src(feat_tuple: tuple, trainset_path: str):
 
 
 try:
-    flat_feature = np.nan_to_num(feature[:12].flatten(), nan=0.0)
-    label_pred, confidence = _cached_src(tuple(flat_feature.tolist()), TRAINSET_PATH)
+    flat_feature = np.nan_to_num(feature[:_n_leads].flatten(), nan=0.0)
+    _src_trainset = TRAINSET_PATH_24CH if _is_24ch_mecg else TRAINSET_PATH
+    label_pred, confidence = _cached_src(tuple(flat_feature.tolist()), _src_trainset)
 except Exception as e:
     st.error(f"SRC 預測失敗：{e}")
     st.stop()
